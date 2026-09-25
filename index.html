@@ -212,6 +212,9 @@ table.stripe-table td.stripe-total { color:var(--text-primary); font-weight:600;
 table.stripe-table td.stripe-wow { font-weight:500; }
 
 .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--text-secondary); margin-bottom:18px; }
+.modal-scrub-stat { display:none; }
+.modal-scrub-value { font-size:30px; font-weight:300; letter-spacing:-0.01em; }
+.modal-scrub-month { font-size:13px; color:var(--text-muted); margin-top:2px; }
 .legend-item { display:flex; align-items:center; gap:6px; }
 .legend-swatch { width:10px; height:10px; border-radius:2.5px; flex-shrink:0; }
 .legend-line { width:12px; height:2px; border-radius:2px; flex-shrink:0; }
@@ -357,6 +360,10 @@ table.data-table tbody tr:last-child td { border-bottom:none; }
   .modal-overlay { padding:16px; align-items:center; }
   .modal-panel { max-width:100%; width:100%; max-height:88vh; border-radius:18px; padding:18px 16px calc(16px + env(safe-area-inset-bottom)); }
   .modal-panel .card-hdr { flex-wrap:wrap; gap:10px 14px; }
+  /* app chart: secondary lines/legend are desktop-only clutter on a phone — the single
+     Actual revenue line reads its value off the big scrub stat above the chart instead */
+  #modal-app-legend { display:none; }
+  .modal-scrub-stat { display:block; margin:2px 0 20px; }
   /* app charts: one fixed 6-month view on mobile too, no range picker */
   #modal-app-range { display:none; }
 
@@ -476,6 +483,10 @@ table.data-table tbody tr:last-child td { border-bottom:none; }
             </div>
           </div>
           <div class="legend" id="modal-app-legend"></div>
+          <div class="modal-scrub-stat" id="modal-scrub-stat">
+            <div class="modal-scrub-value" id="modal-scrub-value"></div>
+            <div class="modal-scrub-month" id="modal-scrub-month"></div>
+          </div>
           <svg class="chart-svg" id="modal-app-chart" viewBox="0 0 1000 360" preserveAspectRatio="xMidYMid meet"></svg>
         </div>
       </div>
@@ -1110,8 +1121,10 @@ function drawLine(svgId, points, opts){
   // baseline
   svg.appendChild(svgEl('line',{x1:ML,x2:W-MR,y1:yScale(Math.max(0,minV)),y2:yScale(Math.max(0,minV)),stroke:css('--grid'),'stroke-width':1}));
 
-  // secondary lines (marketing, pessimistic est., last project) drawn beneath actual — detailed view only, not in the vs-last-year overlay
-  if(!mini && !yoy){
+  // secondary lines (marketing, pessimistic est., last project) drawn beneath actual — detailed
+  // desktop view only. Too many overlapping lines to read at phone width, so mobile shows just
+  // the one Actual revenue line (also skipped in the vs-last-year overlay).
+  if(!mini && !yoy && !lineMobile){
     extraKeys.forEach(key=>{
       const s = seriesDefs.find(sd=>sd.key===key);
       const coords = points.map((p,i)=>[xScale(i), yScale(p[key])]);
@@ -1129,8 +1142,9 @@ function drawLine(svgId, points, opts){
   // actual revenue line, on top
   svg.appendChild(svgEl('path',{d:smoothPath(factCoords), fill:'none', stroke:css('--series-1'), 'stroke-width':2.5, 'stroke-linejoin':'round','stroke-linecap':'round'}));
 
-  // value labels, every month — the secondary lines (marketing/pessimistic/last project) are
-  // desktop-only, too dense for phone width. Actual revenue drawn last so it sits on top.
+  // value labels, every month — detailed desktop view only. Mobile reads values off the big
+  // scrub stat above the chart instead (see the pointer handling below), not off dense
+  // per-point labels that don't fit at phone width.
   if(!mini && !IS_MOBILE){
     if(!yoy){
       extraKeys.forEach(key=>{
@@ -1147,13 +1161,8 @@ function drawLine(svgId, points, opts){
         svg.appendChild(lbl);
       });
     }
-  }
-  // Actual revenue labels: shown on both desktop and mobile (mobile gets just this one series,
-  // sized up the same way axis labels are to stay legible at phone width).
-  if(!mini){
-    const factLabelGap = lineMobile ? 14 : 10;
     points.forEach((p,i)=>{
-      const lbl = svgEl('text',{x:xScale(i), y:yScale(p.fact)-factLabelGap, 'text-anchor':'middle', class:'value-label', style: lineMobile?('font-size:'+lineFontPx+'px'):''});
+      const lbl = svgEl('text',{x:xScale(i), y:yScale(p.fact)-10, 'text-anchor':'middle', class:'value-label'});
       lbl.textContent = fmtThousandsPlain(p.fact);
       svg.appendChild(lbl);
     });
@@ -1168,7 +1177,7 @@ function drawLine(svgId, points, opts){
     const pexi = yoy.prior.length-1;
     svg.appendChild(svgEl('circle',{cx:xScale(pexi),cy:yScale(yoy.prior[pexi].fact),r:3.5,fill:css('--line-last'),stroke:css('--surface-1'),'stroke-width':2}));
   } else {
-    seriesDefs.forEach(s=>{
+    (lineMobile ? seriesDefs.filter(s=>s.key==='fact') : seriesDefs).forEach(s=>{
       svg.appendChild(svgEl('circle',{cx:xScale(exi),cy:yScale(points[exi][s.key]),r:s.key==='fact'?4:3,fill:s.color,stroke:css('--surface-1'),'stroke-width':2}));
     });
   }
@@ -1240,13 +1249,37 @@ function drawLine(svgId, points, opts){
     showTooltip(ev.clientX, ev.clientY, `<div class="tt-title">${opts.name||''} · ${fmtMonthNom(p.m)}</div>${rows}`);
   };
   const resetLineHighlight = ()=>{ crosshair.setAttribute('opacity',0); dot.setAttribute('opacity',0); if(dot2) dot2.setAttribute('opacity',0); };
-  hit.addEventListener('pointermove', ev=>{ if(ev.pointerType!=='touch') onLineHover(ev); });
-  hit.addEventListener('pointerdown', ev=>{ if(ev.pointerType==='touch') ev.preventDefault(); else onLineHover(ev); });
-  hit.addEventListener('pointerup', ev=>{
-    if(ev.pointerType!=='touch') return;
-    togglePinned(svgId+'#line#'+idxFromEvent(ev), resetLineHighlight, ()=> onLineHover(ev));
-  });
-  hit.addEventListener('pointerleave', ev=>{ if(ev.pointerType==='touch') return; resetLineHighlight(); hideTooltip(); });
+  if(lineMobile){
+    // Mobile: no floating tooltip — a big "value / month" readout above the chart instead,
+    // updating live as a finger drags across the line (same idea as Adapty's revenue chart).
+    // Defaults to the most recent point until touched, then stays wherever it was last dragged.
+    const valueEl = document.getElementById('modal-scrub-value');
+    const monthEl = document.getElementById('modal-scrub-month');
+    let lastHapticIdx = null;
+    const updateScrub = (idx, haptic)=>{
+      const p = points[idx];
+      crosshair.setAttribute('x1', xScale(idx)); crosshair.setAttribute('x2', xScale(idx)); crosshair.setAttribute('opacity',1);
+      dot.setAttribute('cx', xScale(idx)); dot.setAttribute('cy', yScale(p.fact)); dot.setAttribute('opacity',1);
+      valueEl.textContent = fmtFull(p.fact);
+      monthEl.textContent = fmtMonthNom(p.m);
+      // Light tap on every new month the finger crosses, not on every pixel of movement —
+      // a real haptic buzz, not a texture. iOS Safari has never implemented the Vibration
+      // API, so this is Android-only; the call is a silent no-op everywhere else.
+      if(haptic && idx!==lastHapticIdx && 'vibrate' in navigator) navigator.vibrate(4);
+      lastHapticIdx = idx;
+    };
+    updateScrub(n-1, false);
+    hit.addEventListener('pointerdown', ev=>{ if(ev.pointerType==='touch') ev.preventDefault(); updateScrub(idxFromEvent(ev), true); });
+    hit.addEventListener('pointermove', ev=>{ if(ev.pointerType==='touch') updateScrub(idxFromEvent(ev), true); });
+  } else {
+    hit.addEventListener('pointermove', ev=>{ if(ev.pointerType!=='touch') onLineHover(ev); });
+    hit.addEventListener('pointerdown', ev=>{ if(ev.pointerType==='touch') ev.preventDefault(); else onLineHover(ev); });
+    hit.addEventListener('pointerup', ev=>{
+      if(ev.pointerType!=='touch') return;
+      togglePinned(svgId+'#line#'+idxFromEvent(ev), resetLineHighlight, ()=> onLineHover(ev));
+    });
+    hit.addEventListener('pointerleave', ev=>{ if(ev.pointerType==='touch') return; resetLineHighlight(); hideTooltip(); });
+  }
   svg.appendChild(hit);
 }
 
